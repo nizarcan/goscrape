@@ -7,11 +7,16 @@ import (
 
 	"github.com/alexflint/go-arg"
 	"github.com/cornelk/goscrape/scraper"
+	"github.com/cornelk/gotokit/buildinfo"
 	"github.com/cornelk/gotokit/env"
 	"github.com/cornelk/gotokit/log"
 )
 
-const toolName = "goscrape"
+var (
+	version = "dev"
+	commit  = ""
+	date    = ""
+)
 
 type arguments struct {
 	Exclude []string `arg:"-n,--include" help:"only include URLs with PERL Regular Expressions support"`
@@ -32,6 +37,10 @@ type arguments struct {
 
 func (arguments) Description() string {
 	return "Scrape a website and create an offline browsable version on the disk.\n"
+}
+
+func (arguments) Version() string {
+	return fmt.Sprintf("Version: %s\n", buildinfo.Version(version, commit, date))
 }
 
 func main() {
@@ -63,6 +72,9 @@ func run(args arguments) error {
 		imageQuality = 0
 	}
 
+	if args.Verbose {
+		log.SetDefaultLevel(log.DebugLevel)
+	}
 	logger, err := createLogger()
 	if err != nil {
 		return fmt.Errorf("creating logger: %w", err)
@@ -109,6 +121,5 @@ func createLogger() (*log.Logger, error) {
 	if err != nil {
 		return nil, fmt.Errorf("initializing logger: %w", err)
 	}
-	logger = logger.Named(toolName)
 	return logger, nil
 }

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/cornelk/gotokit/log"
+	"github.com/h2non/filetype"
+	"github.com/h2non/filetype/types"
 	"github.com/headzoo/surf"
 	"github.com/headzoo/surf/agent"
 	"github.com/headzoo/surf/browser"
@@ -38,7 +40,7 @@ type Config struct {
 // Scraper contains all scraping data.
 type Scraper struct {
 	config  Config
-	log     *log.Logger
+	logger  *log.Logger
 	URL     *url.URL
 	browser *browser.Browser
 
@@ -106,7 +108,7 @@ func New(logger *log.Logger, cfg Config) (*Scraper, error) {
 		config: cfg,
 
 		browser:   b,
-		log:       logger,
+		logger:    logger,
 		processed: make(map[string]struct{}),
 		URL:       u,
 		cssURLRe:  regexp.MustCompile(`^url\(['"]?(.*?)['"]?\)$`),
@@ -156,20 +158,22 @@ func (s *Scraper) Start() error {
 		s.browser.AddRequestHeader("Authorization", "Basic "+auth)
 	}
 
-	s.downloadPage(s.URL, 0)
+	s.downloadURL(s.URL, 0)
 	return nil
 }
 
-func (s *Scraper) downloadPage(u *url.URL, currentDepth uint) {
-	s.log.Info("Downloading", log.Stringer("URL", u))
+func (s *Scraper) downloadURL(u *url.URL, currentDepth uint) {
+	s.logger.Info("Downloading", log.Stringer("URL", u))
 
 	if err := s.browser.Open(u.String()); err != nil {
-		s.log.Error("Request failed", err, log.Stringer("url", u))
+		s.logger.Error("Request failed",
+			log.Stringer("url", u),
+			log.Err(err))
 		return
 	}
 
 	if c := s.browser.StatusCode(); c != http.StatusOK {
-		s.log.Error("Request failed", nil,
+		s.logger.Error("Request failed",
 			log.Stringer("url", u),
 			log.Int("http_status_code", c))
 		return
@@ -177,8 +181,16 @@ func (s *Scraper) downloadPage(u *url.URL, currentDepth uint) {
 
 	buf := &bytes.Buffer{}
 	if _, err := s.browser.Download(buf); err != nil {
-		s.log.Error("Downloading content failed", err, log.Stringer("url", u))
+		s.logger.Error("Downloading content failed",
+			log.Stringer("url", u),
+			log.Err(err))
 		return
+	}
+
+	fileExtension := ""
+	kind, err := filetype.Match(buf.Bytes())
+	if err == nil && kind != types.Unknown {
+		fileExtension = kind.Extension
 	}
 
 	if currentDepth == 0 {
@@ -188,7 +200,7 @@ func (s *Scraper) downloadPage(u *url.URL, currentDepth uint) {
 		s.URL = u
 	}
 
-	s.storePage(u, buf)
+	s.storeDownload(u, buf, fileExtension)
 
 	s.downloadReferences()
 
@@ -202,23 +214,35 @@ func (s *Scraper) downloadPage(u *url.URL, currentDepth uint) {
 	}
 
 	for _, URL := range toScrape {
-		s.downloadPage(URL, currentDepth+1)
+		s.downloadURL(URL, currentDepth+1)
 	}
 }
 
-func (s *Scraper) storePage(u *url.URL, buf *bytes.Buffer) {
-	html, err := s.fixFileReferences(u, buf)
-	if err != nil {
-		s.log.Error("Fixing file references failed", err, log.Stringer("url", u))
-		return
+// storeDownload writes the download to a file, if a known binary file is detected, processing of the file as
+// page to look for links is skipped.
+func (s *Scraper) storeDownload(u *url.URL, buf *bytes.Buffer, fileExtension string) {
+	isAPage := false
+	if fileExtension == "" {
+		html, fixed, err := s.fixURLReferences(u, buf)
+		if err != nil {
+			s.logger.Error("Fixing file references failed",
+				log.Stringer("url", u),
+				log.Err(err))
+			return
+		}
+
+		if fixed {
+			buf = bytes.NewBufferString(html)
+		}
+		isAPage = true
 	}
 
-	buf = bytes.NewBufferString(html)
-	filePath := s.GetFilePath(u, true)
+	filePath := s.GetFilePath(u, isAPage)
 	// always update html files, content might have changed
-	if err = s.writeFile(filePath, buf); err != nil {
-		s.log.Error("Writing HTML to file failed", err,
+	if err := s.writeFile(filePath, buf); err != nil {
+		s.logger.Error("Writing to file failed",
 			log.Stringer("URL", u),
-			log.String("file", filePath))
+			log.String("file", filePath),
+			log.Err(err))
 	}
 }
